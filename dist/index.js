@@ -5984,6 +5984,7 @@ const checkRest = (rest) => {
     if (Object.keys(rest).length === 0) {
         return;
     }
+    // TODO: these should fail the build
     core.warning(`Found unexpected fields in source: ${JSON.stringify(rest)}`);
 };
 const parseRefs = (refs) => {
@@ -6003,7 +6004,7 @@ exports.property = (raw) => {
     };
 };
 exports.space = (raw) => {
-    const { uid, name, aliases, slug, refs, counterexamples_id, __content, ...rest } = yaml.loadFront(raw);
+    const { uid, counterexamples_id, name, aliases, slug, refs, ambiguous_construction, __content, ...rest } = yaml.loadFront(raw);
     checkRest(rest);
     return {
         uid,
@@ -6012,11 +6013,12 @@ exports.space = (raw) => {
         aliases,
         slug,
         refs: parseRefs(refs),
-        description: __content // TODO: proof of topology section
+        description: __content,
+        ambiguous_construction
     };
 };
 exports.theorem = (raw) => {
-    const { uid, counterexamples_id, refs, then, __content, ...rest } = yaml.loadFront(raw);
+    const { uid, counterexamples_id, refs, then, converse, __content, ...rest } = yaml.loadFront(raw);
     const if_ = rest['if'];
     delete rest['if'];
     checkRest(rest);
@@ -6025,6 +6027,7 @@ exports.theorem = (raw) => {
         counterexamples_id,
         if_,
         then,
+        converse,
         refs: parseRefs(refs),
         description: __content
     };
@@ -7321,6 +7324,10 @@ module.exports = require("fs");
 
 Object.defineProperty(exports, "__esModule", { value: true });
 function build(properties, spaces, theorems, traits) {
+    // TODO
+    // * traits reference existing spaces and properties
+    // * theorem formulae reference existing properties
+    // * (property | space | trait | theorems) have unique uids
     return new Bundle(properties, spaces, theorems, traits);
 }
 exports.build = build;
