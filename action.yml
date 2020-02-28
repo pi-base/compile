@@ -2,10 +2,8 @@ name: Compile
 description: Build a viewer bundle from data in the repository
 author: James Dabbs
 inputs:
-  repo:
-    description: Path to the cloned repository
   out:
     description: Path to write the bundle to
 runs:
   using: 'node12'
-  main: 'lib/main.js'
+  main: 'dist/index.js'

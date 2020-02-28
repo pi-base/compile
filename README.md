@@ -1,5 +1,8 @@
 ## Publish to a distribution branch
 
+    yarn run ncc build src/main.ts # bundle into dist/index.js
+    git add -f dist/index.js
+
 Actions are run from GitHub repos.  We will create a releases branch and only checkin production modules (core in this case).
 
 Comment out node_modules in .gitignore and create a releases/v1 branch
