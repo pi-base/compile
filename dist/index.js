@@ -153,7 +153,7 @@ module.exports = new Schema({
     __webpack_require__(581)
   ],
   implicit: [
-    __webpack_require__(809),
+    __webpack_require__(787),
     __webpack_require__(228),
     __webpack_require__(44),
     __webpack_require__(417)
@@ -504,6 +504,59 @@ function onceStrict (fn) {
   f.onceError = name + " shouldn't be called more than once"
   f.called = false
   return f
+}
+
+
+/***/ }),
+
+/***/ 52:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", { value: true });
+const fs_1 = __webpack_require__(820);
+function refName(raw) {
+    const match = /refs\/heads\/([^\n]+)/.exec(raw);
+    return match && match[1];
+}
+async function find() {
+    let version = await fromRepo();
+    if (version) {
+        return version;
+    }
+    version = fromEnv();
+    if (version) {
+        return version;
+    }
+    throw new Error('Could not determine bundle version');
+}
+exports.find = find;
+async function fromRepo() {
+    const contents = await fs_1.readFile('.git/HEAD').catch(() => { });
+    if (!contents) {
+        return;
+    }
+    const head = refName(contents);
+    if (head) {
+        const sha = await fs_1.readFile(`.git/refs/heads/${head}`);
+        return {
+            ref: head,
+            sha: sha.trim()
+        };
+    }
+}
+function fromEnv(env = process.env) {
+    if (!env.GITHUB_REF) {
+        return;
+    }
+    if (!env.GITHUB_SHA) {
+        return;
+    }
+    return {
+        ref: refName(env.GITHUB_REF) || 'unknown',
+        sha: env.GITHUB_SHA
+    };
 }
 
 
@@ -1901,28 +1954,37 @@ var __importStar = (this && this.__importStar) || function (mod) {
     result["default"] = mod;
     return result;
 };
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const core = __importStar(__webpack_require__(470));
 const fs = __importStar(__webpack_require__(747));
 const process = __importStar(__webpack_require__(765));
-const Bundle = __importStar(__webpack_require__(753));
-const parse_1 = __webpack_require__(586);
-async function load(repo) {
-    const properties = await parse_1.parse(`${repo}/properties/*.md`, parse_1.property);
-    const spaces = await parse_1.parse(`${repo}/spaces/**/README.md`, parse_1.space);
-    const theorems = await parse_1.parse(`${repo}/theorems/*.md`, parse_1.theorem);
-    const traits = await parse_1.parse(`${repo}/spaces/**/properties/*.md`, parse_1.trait);
-    return Bundle.build(properties, spaces, theorems, traits);
-}
-exports.load = load;
+const B = __importStar(__webpack_require__(809));
+const load_1 = __importDefault(__webpack_require__(661));
 async function run() {
     const repo = process.env['GITHUB_WORKSPACE'] || '.';
     const outpath = core.getInput('out');
     core.debug(`Compiling repo=${repo} to out=${outpath}`);
-    const bundle = await load(repo);
-    fs.writeFileSync(outpath, JSON.stringify(bundle.asJSON(), null, 2));
+    const { bundle, errors } = await load_1.default(repo);
+    if (errors) {
+        errors.forEach((messages, path) => {
+            messages.forEach(message => {
+                core.error(`file=${path}::${message}`);
+            });
+        });
+    }
+    if (errors || !bundle) {
+        core.setFailed('Compilation finished with errors');
+        return;
+    }
+    fs.writeFileSync(outpath, JSON.stringify(B.serialize(bundle)));
 }
-run().catch(err => core.setFailed(err.message));
+run().catch(err => {
+    core.setFailed(err.message);
+    core.error(err.message);
+});
 
 
 /***/ }),
@@ -5868,6 +5930,235 @@ exports.getState = getState;
 
 /***/ }),
 
+/***/ 471:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (Object.hasOwnProperty.call(mod, k)) result[k] = mod[k];
+    result["default"] = mod;
+    return result;
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const yaml = __importStar(__webpack_require__(925));
+const Formula = __importStar(__webpack_require__(631));
+function loadFront(raw) {
+    return yaml.safeLoadFront(raw);
+}
+function all(validator, inputs) {
+    const out = { value: [], errors: [] };
+    inputs.forEach(input => {
+        const { value, errors } = validator(input);
+        if (value && out.value) {
+            out.value.push(value);
+        }
+        else {
+            out.value = undefined;
+        }
+        out.errors = out.errors.concat(...errors);
+    });
+    return out;
+}
+exports.all = all;
+function validate(path, handler) {
+    const result = { errors: [] };
+    const error = (message, key = path) => {
+        result.errors.push({ path: key, message });
+    };
+    result.value = handler(error);
+    return result;
+}
+function duplicated(values) {
+    const seen = new Set();
+    const dupes = new Set();
+    values.forEach(value => {
+        if (seen.has(value)) {
+            dupes.add(value);
+        }
+        seen.add(value);
+    });
+    return Array.from(dupes);
+}
+function noExtras(rest, error) {
+    if (Object.keys(rest).length > 0) {
+        error(`unexpected extra fields: ${Object.keys(rest)}`);
+    }
+}
+function required(value, key, error) {
+    if (!value[key] && value[key] !== false) {
+        error(`${key} is required`);
+    }
+}
+const paths = {
+    property(p) { return `properties/${p}.md`; },
+    space(s) { return `spaces/${s}/README.md`; },
+    theorem(t) { return `theorems/${t}.md`; },
+    trait({ space, property }) { return `spaces/${space}/properties/${property}.md`; }
+};
+function property(input) {
+    return validate(input.path, error => {
+        const { counterexamples_id, uid = '', name = '', aliases = [], refs = [], slug, __content: description = '', ...rest } = loadFront(input.contents);
+        const property = {
+            counterexamples_id,
+            uid: String(uid).trim(),
+            name: String(name).trim(),
+            aliases,
+            refs,
+            description: String(description).trim()
+        };
+        if (!input.path.endsWith(paths.property(uid))) {
+            error(`path does not match uid=${uid}`);
+        }
+        required(property, 'uid', error);
+        required(property, 'name', error);
+        required(property, 'description', error);
+        noExtras(rest, error);
+        return property;
+    });
+}
+exports.property = property;
+function space(input) {
+    return validate(input.path, error => {
+        const { counterexamples_id, uid = '', name = '', aliases = [], refs = [], ambiguous_construction, slug, __content: description = '', ...rest } = loadFront(input.contents);
+        const space = {
+            uid: String(uid).trim(),
+            counterexamples_id,
+            name: String(name).trim(),
+            description: String(description).trim(),
+            aliases,
+            refs,
+            ambiguous_construction
+        };
+        if (!input.path.endsWith(paths.space(uid))) {
+            error(`path does not match uid=${uid}`);
+        }
+        required(space, 'uid', error);
+        required(space, 'name', error);
+        required(space, 'description', error);
+        noExtras(rest, error);
+        return space;
+    });
+}
+exports.space = space;
+function theorem(input) {
+    return validate(input.path, error => {
+        const { counterexamples_id, uid = '', if: when, then, refs = [], converse, __content: description = '', ...rest } = loadFront(input.contents);
+        const theorem = {
+            counterexamples_id,
+            uid: String(uid).trim(),
+            when: when && Formula.fromJSON(when),
+            then: then && Formula.fromJSON(then),
+            description: String(description).trim(),
+            refs,
+            converse
+        };
+        if (!input.path.endsWith(paths.theorem(uid))) {
+            error(`path does not match uid=${uid}`);
+        }
+        required(theorem, 'uid', error);
+        required(theorem, 'when', error);
+        required(theorem, 'then', error);
+        required(theorem, 'description', error);
+        noExtras(rest, error);
+        return theorem;
+    });
+}
+exports.theorem = theorem;
+function trait(input) {
+    return validate(input.path, error => {
+        const { uid = '', counterexamples_id, space = '', property = '', value, refs = [], __content: description = '', ...rest } = loadFront(input.contents);
+        const trait = {
+            uid: String(uid).trim(),
+            space: String(space).trim(),
+            property: String(property).trim(),
+            value: Boolean(value),
+            counterexamples_id,
+            refs,
+            description
+        };
+        if (!input.path.endsWith(paths.trait({ space, property }))) {
+            error(`path does not match space=${space} and property=${property}`);
+        }
+        required(trait, 'space', error);
+        required(trait, 'property', error);
+        required(trait, 'value', error);
+        required(trait, 'description', error);
+        noExtras(rest, error);
+        return trait;
+    });
+}
+exports.trait = trait;
+function bundle(bundle) {
+    return validate('', error => {
+        const duplicatePropertyNames = duplicated(Array.from(bundle.properties.values()).map(s => s.name));
+        if (duplicatePropertyNames.length > 0) {
+            error(`Duplicate property names: ${duplicatePropertyNames}`);
+        }
+        const duplicateSpaceNames = duplicated(Array.from(bundle.spaces.values()).map(s => s.name));
+        if (duplicateSpaceNames.length > 0) {
+            error(`Duplicate space names: ${duplicateSpaceNames}`);
+        }
+        bundle.traits.forEach(trait => {
+            const errorKey = paths.trait(trait);
+            if (!bundle.properties.has(trait.property)) {
+                error(`unknown property=${trait.property}`, errorKey);
+            }
+            if (!bundle.spaces.has(trait.space)) {
+                error(`unknown space=${trait.space}`, errorKey);
+            }
+        });
+        bundle.theorems.forEach(theorem => {
+            const key = paths.theorem(theorem.uid);
+            Formula.properties(theorem.when).forEach(id => {
+                if (!bundle.properties.has(id)) {
+                    error(`if references unknown property=${id}`, key);
+                }
+            });
+            Formula.properties(theorem.then).forEach(id => {
+                if (!bundle.properties.has(id)) {
+                    error(`then references unknown property=${id}`, key);
+                }
+            });
+            if (theorem.converse) {
+                theorem.converse.forEach(id => {
+                    if (!bundle.theorems.has(id)) {
+                        error(`converse references unknown theorem=${id}`, key);
+                    }
+                });
+            }
+        });
+        return bundle;
+    });
+}
+exports.bundle = bundle;
+
+
+/***/ }),
+
+/***/ 493:
+/***/ (function(__unusedmodule, exports) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", { value: true });
+function union() {
+    var sets = [];
+    for (var _i = 0; _i < arguments.length; _i++) {
+        sets[_i] = arguments[_i];
+    }
+    return sets.reduce(function (acc, set) {
+        set.forEach(function (p) { return acc.add(p); });
+        return acc;
+    }, new Set());
+}
+exports.union = union;
+
+
+/***/ }),
+
 /***/ 556:
 /***/ (function(module) {
 
@@ -5956,111 +6247,6 @@ module.exports = new Schema({
     __webpack_require__(988)
   ]
 });
-
-
-/***/ }),
-
-/***/ 586:
-/***/ (function(__unusedmodule, exports, __webpack_require__) {
-
-"use strict";
-
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (Object.hasOwnProperty.call(mod, k)) result[k] = mod[k];
-    result["default"] = mod;
-    return result;
-};
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-const core = __importStar(__webpack_require__(470));
-const glob_1 = __importDefault(__webpack_require__(402));
-const fs = __importStar(__webpack_require__(747));
-const yaml = __importStar(__webpack_require__(925));
-const checkRest = (rest) => {
-    if (Object.keys(rest).length === 0) {
-        return;
-    }
-    // TODO: these should fail the build
-    core.warning(`Found unexpected fields in source: ${JSON.stringify(rest)}`);
-};
-const parseRefs = (refs) => {
-    return refs; // TODO
-};
-exports.property = (raw) => {
-    const { uid, counterexamples_id, name, aliases, slug, refs, __content, ...rest } = yaml.loadFront(raw);
-    checkRest(rest);
-    return {
-        uid,
-        counterexamples_id,
-        name,
-        aliases,
-        slug,
-        refs: parseRefs(refs),
-        description: __content
-    };
-};
-exports.space = (raw) => {
-    const { uid, counterexamples_id, name, aliases, slug, refs, ambiguous_construction, __content, ...rest } = yaml.loadFront(raw);
-    checkRest(rest);
-    return {
-        uid,
-        counterexamples_id,
-        name,
-        aliases,
-        slug,
-        refs: parseRefs(refs),
-        description: __content,
-        ambiguous_construction
-    };
-};
-exports.theorem = (raw) => {
-    const { uid, counterexamples_id, refs, then, converse, __content, ...rest } = yaml.loadFront(raw);
-    const if_ = rest['if'];
-    delete rest['if'];
-    checkRest(rest);
-    return {
-        uid,
-        counterexamples_id,
-        if_,
-        then,
-        converse,
-        refs: parseRefs(refs),
-        description: __content
-    };
-};
-exports.trait = (raw) => {
-    const { uid, counterexamples_id, space, property, value, refs, __content, ...rest } = yaml.loadFront(raw);
-    checkRest(rest);
-    return {
-        uid,
-        counterexamples_id,
-        space,
-        property,
-        value,
-        description: __content,
-        refs: parseRefs(refs)
-    };
-};
-async function parse(pattern, parser) {
-    return new Promise((resolve, reject) => {
-        glob_1.default(pattern, (err, files) => {
-            if (err) {
-                return reject(err);
-            }
-            const parsed = files.reduce((acc, file) => {
-                const contents = fs.readFileSync(file).toString();
-                const result = parser(contents);
-                return result ? acc.concat(result) : acc;
-            }, []);
-            resolve(parsed);
-        });
-    });
-}
-exports.parse = parse;
 
 
 /***/ }),
@@ -6240,6 +6426,190 @@ module.exports = new Type('tag:yaml.org,2002:js/regexp', {
 
 /***/ }),
 
+/***/ 631:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+var __assign = (this && this.__assign) || function () {
+    __assign = Object.assign || function(t) {
+        for (var s, i = 1, n = arguments.length; i < n; i++) {
+            s = arguments[i];
+            for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p))
+                t[p] = s[p];
+        }
+        return t;
+    };
+    return __assign.apply(this, arguments);
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+var Grammar_1 = __webpack_require__(806);
+var Util_1 = __webpack_require__(493);
+function and() {
+    var subs = [];
+    for (var _i = 0; _i < arguments.length; _i++) {
+        subs[_i] = arguments[_i];
+    }
+    return { kind: 'and', subs: subs };
+}
+exports.and = and;
+function or() {
+    var subs = [];
+    for (var _i = 0; _i < arguments.length; _i++) {
+        subs[_i] = arguments[_i];
+    }
+    return { kind: 'or', subs: subs };
+}
+exports.or = or;
+function atom(p, v) {
+    if (v === void 0) { v = true; }
+    return { kind: 'atom', property: p, value: v };
+}
+exports.atom = atom;
+function properties(f) {
+    switch (f.kind) {
+        case 'atom':
+            return new Set([f.property]);
+        default:
+            return Util_1.union.apply(void 0, f.subs.map(properties));
+    }
+}
+exports.properties = properties;
+function render(f, term) {
+    switch (f.kind) {
+        case 'atom':
+            var name_1 = term(f.property);
+            return f.value ? name_1 : '¬' + name_1;
+        case 'and':
+            return '(' + f.subs.map(function (sf) { return render(sf, term); }).join(' ∧ ') + ')';
+        case 'or':
+            return '(' + f.subs.map(function (sf) { return render(sf, term); }).join(' ∨ ') + ')';
+    }
+}
+exports.render = render;
+function negate(formula) {
+    switch (formula.kind) {
+        case 'atom':
+            return atom(formula.property, !formula.value);
+        case 'and':
+            return or.apply(void 0, formula.subs.map(negate));
+        case 'or':
+            return and.apply(void 0, formula.subs.map(negate));
+    }
+}
+exports.negate = negate;
+function map(func, formula) {
+    switch (formula.kind) {
+        case 'atom':
+            return func(formula);
+        default:
+            return __assign(__assign({}, formula), { subs: formula.subs.map(function (sub) { return map(func, sub); }) });
+    }
+}
+exports.map = map;
+function mapProperty(func, formula) {
+    function mapAtom(a) {
+        return __assign(__assign({}, a), { property: func(a.property) });
+    }
+    return map(mapAtom, formula);
+}
+exports.mapProperty = mapProperty;
+function compact(f) {
+    return properties(f).has(undefined) ? undefined : f;
+}
+exports.compact = compact;
+function evaluate(f, traits) {
+    var result;
+    switch (f.kind) {
+        case 'atom':
+            if (traits.has(f.property)) {
+                return traits.get(f.property) === f.value;
+            }
+            return undefined;
+        case 'and':
+            result = true; // by default
+            f.subs.forEach(function (sub) {
+                if (result === false) {
+                    return;
+                }
+                var sv = evaluate(sub, traits);
+                if (sv === false) { // definitely false
+                    result = false;
+                }
+                else if (result && sv === undefined) { // maybe false
+                    result = undefined;
+                }
+            });
+            return result;
+        case 'or':
+            result = false;
+            f.subs.forEach(function (sub) {
+                if (result === true) {
+                    return;
+                }
+                var sv = evaluate(sub, traits);
+                if (sv === true) { // definitely true
+                    result = true;
+                }
+                else if (result === false && sv === undefined) { // maybe true
+                    result = undefined;
+                }
+            });
+            return result;
+    }
+}
+exports.evaluate = evaluate;
+function parse(q) {
+    if (!q) {
+        return;
+    }
+    var parsed;
+    try {
+        parsed = Grammar_1.parse(q);
+    }
+    catch (_a) {
+        if (q && q.startsWith('(')) {
+            return;
+        }
+        else {
+            return parse('(' + q + ')');
+        }
+    }
+    return fromJSON(parsed);
+}
+exports.parse = parse;
+function fromJSON(json) {
+    if (json.and) {
+        return and.apply(void 0, json.and.map(fromJSON));
+    }
+    else if (json.or) {
+        return or.apply(void 0, json.or.map(fromJSON));
+    }
+    else if (json.property) {
+        return atom(json.property, json.value);
+    }
+    else {
+        var property = Object.keys(json)[0];
+        return atom(property, json[property]);
+    }
+}
+exports.fromJSON = fromJSON;
+function toJSON(f) {
+    var _a;
+    switch (f.kind) {
+        case 'atom':
+            return _a = {}, _a[f.property] = f.value, _a;
+        case 'and':
+            return { and: f.subs.map(toJSON) };
+        case 'or':
+            return { or: f.subs.map(toJSON) };
+    }
+}
+exports.toJSON = toJSON;
+
+
+/***/ }),
+
 /***/ 633:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
@@ -6256,6 +6626,96 @@ module.exports = new Type('tag:yaml.org,2002:merge', {
   kind: 'scalar',
   resolve: resolveYamlMerge
 });
+
+
+/***/ }),
+
+/***/ 661:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (Object.hasOwnProperty.call(mod, k)) result[k] = mod[k];
+    result["default"] = mod;
+    return result;
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const B = __importStar(__webpack_require__(809));
+const fs_1 = __webpack_require__(820);
+const Validations = __importStar(__webpack_require__(471));
+const version_1 = __webpack_require__(52);
+function rootDirectories(repo) {
+    return [
+        `${repo}/properties`,
+        `${repo}/spaces`,
+        `${repo}/theorems`
+    ];
+}
+exports.rootDirectories = rootDirectories;
+async function load(repo) {
+    return validate({
+        properties: await fs_1.readFiles(`${repo}/properties/*.md`),
+        spaces: await fs_1.readFiles(`${repo}/spaces/*/README.md`),
+        theorems: await fs_1.readFiles(`${repo}/theorems/*.md`),
+        traits: await fs_1.readFiles(`${repo}/spaces/*/properties/*.md`),
+        version: await version_1.find()
+    });
+}
+exports.default = load;
+function validate({ properties = [], spaces = [], theorems = [], traits = [], version }) {
+    let bundle;
+    try {
+        bundle = B.deserialize({
+            properties: checkAll(Validations.property, properties),
+            spaces: checkAll(Validations.space, spaces),
+            theorems: checkAll(Validations.theorem, theorems),
+            traits: checkAll(Validations.trait, traits),
+            version
+        });
+        return format(Validations.bundle(bundle));
+    }
+    catch (e) {
+        if (e instanceof ValidationError) {
+            return format({ value: bundle, errors: e.messages });
+        }
+        else {
+            throw e;
+        }
+    }
+}
+exports.validate = validate;
+class ValidationError extends Error {
+    constructor(message, messages) {
+        super(message);
+        this.name = 'ValidationError';
+        this.messages = messages;
+    }
+}
+function checkAll(validator, inputs) {
+    const result = Validations.all(validator, inputs);
+    if (result.errors.length > 0 || !result.value) {
+        throw new ValidationError('Validation failed', result.errors);
+    }
+    return result.value;
+}
+function format({ value, errors }) {
+    if (errors.length > 0) {
+        const grouped = new Map();
+        errors.forEach(({ path, message }) => {
+            if (!grouped.has(path)) {
+                grouped.set(path, []);
+            }
+            grouped.get(path).push(message);
+        });
+        return { bundle: value, errors: grouped };
+    }
+    else {
+        return { bundle: value };
+    }
+}
 
 
 /***/ }),
@@ -7243,6 +7703,21 @@ module.exports = new Schema({
 
 /***/ }),
 
+/***/ 730:
+/***/ (function(__unusedmodule, exports) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", { value: true });
+function traitId(_a) {
+    var space = _a.space, property = _a.property;
+    return space + "|" + property;
+}
+exports.traitId = traitId;
+
+
+/***/ }),
+
 /***/ 740:
 /***/ (function(module) {
 
@@ -7317,46 +7792,6 @@ module.exports = require("fs");
 
 /***/ }),
 
-/***/ 753:
-/***/ (function(__unusedmodule, exports) {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", { value: true });
-function build(properties, spaces, theorems, traits) {
-    // TODO
-    // * traits reference existing spaces and properties
-    // * theorem formulae reference existing properties
-    // * (property | space | trait | theorems) have unique uids
-    return new Bundle(properties, spaces, theorems, traits);
-}
-exports.build = build;
-class Bundle {
-    constructor(properties, spaces, theorems, traits) {
-        this._properties = properties;
-        this._spaces = spaces;
-        this._traits = traits;
-        this._theorems = theorems;
-    }
-    asJSON() {
-        const json = {
-            properties: this._properties,
-            spaces: this._spaces,
-            theorems: this._theorems.map(serializeTheorem),
-            traits: this._traits
-        };
-        return json;
-    }
-}
-exports.Bundle = Bundle;
-function serializeTheorem(theorem) {
-    const { if_, ...rest } = theorem;
-    return { if: if_, ...rest };
-}
-
-
-/***/ }),
-
 /***/ 765:
 /***/ (function(module) {
 
@@ -7364,7 +7799,7 @@ module.exports = require("process");
 
 /***/ }),
 
-/***/ 809:
+/***/ 787:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
 "use strict";
@@ -7402,6 +7837,1017 @@ module.exports = new Type('tag:yaml.org,2002:null', {
   },
   defaultStyle: 'lowercase'
 });
+
+
+/***/ }),
+
+/***/ 806:
+/***/ (function(__unusedmodule, exports) {
+
+"use strict";
+// tslint:disable:only-arrow-functions
+// tslint:disable:object-literal-shorthand
+// tslint:disable:trailing-comma
+// tslint:disable:object-literal-sort-keys
+// tslint:disable:one-variable-per-declaration
+// tslint:disable:max-line-length
+// tslint:disable:no-consecutive-blank-lines
+// tslint:disable:align
+// Generated by PEG.js v. 0.10.0 (ts-pegjs plugin v. 0.2.6 )
+//
+// https://pegjs.org/   https://github.com/metadevpro/ts-pegjs
+
+var __extends = (this && this.__extends) || (function () {
+    var extendStatics = function (d, b) {
+        extendStatics = Object.setPrototypeOf ||
+            ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
+            function (d, b) { for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p]; };
+        return extendStatics(d, b);
+    };
+    return function (d, b) {
+        extendStatics(d, b);
+        function __() { this.constructor = d; }
+        d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+var SyntaxError = /** @class */ (function (_super) {
+    __extends(SyntaxError, _super);
+    function SyntaxError(message, expected, found, location) {
+        var _this = _super.call(this) || this;
+        _this.message = message;
+        _this.expected = expected;
+        _this.found = found;
+        _this.location = location;
+        _this.name = "SyntaxError";
+        if (typeof Error.captureStackTrace === "function") {
+            Error.captureStackTrace(_this, SyntaxError);
+        }
+        return _this;
+    }
+    SyntaxError.buildMessage = function (expected, found) {
+        function hex(ch) {
+            return ch.charCodeAt(0).toString(16).toUpperCase();
+        }
+        function literalEscape(s) {
+            return s
+                .replace(/\\/g, "\\\\")
+                .replace(/"/g, "\\\"")
+                .replace(/\0/g, "\\0")
+                .replace(/\t/g, "\\t")
+                .replace(/\n/g, "\\n")
+                .replace(/\r/g, "\\r")
+                .replace(/[\x00-\x0F]/g, function (ch) { return "\\x0" + hex(ch); })
+                .replace(/[\x10-\x1F\x7F-\x9F]/g, function (ch) { return "\\x" + hex(ch); });
+        }
+        function classEscape(s) {
+            return s
+                .replace(/\\/g, "\\\\")
+                .replace(/\]/g, "\\]")
+                .replace(/\^/g, "\\^")
+                .replace(/-/g, "\\-")
+                .replace(/\0/g, "\\0")
+                .replace(/\t/g, "\\t")
+                .replace(/\n/g, "\\n")
+                .replace(/\r/g, "\\r")
+                .replace(/[\x00-\x0F]/g, function (ch) { return "\\x0" + hex(ch); })
+                .replace(/[\x10-\x1F\x7F-\x9F]/g, function (ch) { return "\\x" + hex(ch); });
+        }
+        function describeExpectation(expectation) {
+            switch (expectation.type) {
+                case "literal":
+                    return "\"" + literalEscape(expectation.text) + "\"";
+                case "class":
+                    var escapedParts = expectation.parts.map(function (part) {
+                        return Array.isArray(part)
+                            ? classEscape(part[0]) + "-" + classEscape(part[1])
+                            : classEscape(part);
+                    });
+                    return "[" + (expectation.inverted ? "^" : "") + escapedParts + "]";
+                case "any":
+                    return "any character";
+                case "end":
+                    return "end of input";
+                case "other":
+                    return expectation.description;
+            }
+        }
+        function describeExpected(expected1) {
+            var descriptions = expected1.map(describeExpectation);
+            var i;
+            var j;
+            descriptions.sort();
+            if (descriptions.length > 0) {
+                for (i = 1, j = 1; i < descriptions.length; i++) {
+                    if (descriptions[i - 1] !== descriptions[i]) {
+                        descriptions[j] = descriptions[i];
+                        j++;
+                    }
+                }
+                descriptions.length = j;
+            }
+            switch (descriptions.length) {
+                case 1:
+                    return descriptions[0];
+                case 2:
+                    return descriptions[0] + " or " + descriptions[1];
+                default:
+                    return descriptions.slice(0, -1).join(", ")
+                        + ", or "
+                        + descriptions[descriptions.length - 1];
+            }
+        }
+        function describeFound(found1) {
+            return found1 ? "\"" + literalEscape(found1) + "\"" : "end of input";
+        }
+        return "Expected " + describeExpected(expected) + " but " + describeFound(found) + " found.";
+    };
+    return SyntaxError;
+}(Error));
+exports.SyntaxError = SyntaxError;
+function peg$parse(input, options) {
+    options = options !== undefined ? options : {};
+    var peg$FAILED = {};
+    var peg$startRuleFunctions = { Formula: peg$parseFormula };
+    var peg$startRuleFunction = peg$parseFormula;
+    var peg$c0 = peg$otherExpectation("formula");
+    var peg$c1 = peg$otherExpectation("whitespace");
+    var peg$c2 = /^[ \t\n\r]/;
+    var peg$c3 = peg$classExpectation([" ", "\t", "\n", "\r"], false, false);
+    var peg$c4 = "(";
+    var peg$c5 = peg$literalExpectation("(", false);
+    var peg$c6 = ")";
+    var peg$c7 = peg$literalExpectation(")", false);
+    var peg$c8 = function (head, tail) {
+        return { and: [head].concat(tail.map(function (item) { return item[3]; })) };
+    };
+    var peg$c9 = function (head, tail) {
+        return { or: [head].concat(tail.map(function (item) { return item[3]; })) };
+    };
+    var peg$c10 = function (mod, prop) {
+        var value;
+        if (mod === '?') {
+            value = undefined;
+        }
+        else if (mod) {
+            value = false;
+        }
+        else {
+            value = true;
+        }
+        return { property: prop, value: value };
+    };
+    var peg$c11 = peg$otherExpectation("modifier");
+    var peg$c12 = "~";
+    var peg$c13 = peg$literalExpectation("~", false);
+    var peg$c14 = "not ";
+    var peg$c15 = peg$literalExpectation("not ", false);
+    var peg$c16 = "?";
+    var peg$c17 = peg$literalExpectation("?", false);
+    var peg$c18 = peg$otherExpectation("conjunction");
+    var peg$c19 = "++";
+    var peg$c20 = peg$literalExpectation("++", false);
+    var peg$c21 = "+";
+    var peg$c22 = peg$literalExpectation("+", false);
+    var peg$c23 = "&&";
+    var peg$c24 = peg$literalExpectation("&&", false);
+    var peg$c25 = "&";
+    var peg$c26 = peg$literalExpectation("&", false);
+    var peg$c27 = peg$otherExpectation("disjunction");
+    var peg$c28 = "||";
+    var peg$c29 = peg$literalExpectation("||", false);
+    var peg$c30 = "|";
+    var peg$c31 = peg$literalExpectation("|", false);
+    var peg$c32 = peg$otherExpectation("property name");
+    var peg$c33 = /^[^~+&|()]/;
+    var peg$c34 = peg$classExpectation(["~", "+", "&", "|", "(", ")"], true, false);
+    var peg$c35 = function (prop) {
+        return prop.join("").trim();
+    };
+    var peg$currPos = 0;
+    var peg$savedPos = 0;
+    var peg$posDetailsCache = [{ line: 1, column: 1 }];
+    var peg$maxFailPos = 0;
+    var peg$maxFailExpected = [];
+    var peg$silentFails = 0;
+    var peg$result;
+    if (options.startRule !== undefined) {
+        if (!(options.startRule in peg$startRuleFunctions)) {
+            throw new Error("Can't start parsing from rule \"" + options.startRule + "\".");
+        }
+        peg$startRuleFunction = peg$startRuleFunctions[options.startRule];
+    }
+    function text() {
+        return input.substring(peg$savedPos, peg$currPos);
+    }
+    function location() {
+        return peg$computeLocation(peg$savedPos, peg$currPos);
+    }
+    function expected(description, location1) {
+        location1 = location1 !== undefined
+            ? location1
+            : peg$computeLocation(peg$savedPos, peg$currPos);
+        throw peg$buildStructuredError([peg$otherExpectation(description)], input.substring(peg$savedPos, peg$currPos), location1);
+    }
+    function error(message, location1) {
+        location1 = location1 !== undefined
+            ? location1
+            : peg$computeLocation(peg$savedPos, peg$currPos);
+        throw peg$buildSimpleError(message, location1);
+    }
+    function peg$literalExpectation(text1, ignoreCase) {
+        return { type: "literal", text: text1, ignoreCase: ignoreCase };
+    }
+    function peg$classExpectation(parts, inverted, ignoreCase) {
+        return { type: "class", parts: parts, inverted: inverted, ignoreCase: ignoreCase };
+    }
+    function peg$anyExpectation() {
+        return { type: "any" };
+    }
+    function peg$endExpectation() {
+        return { type: "end" };
+    }
+    function peg$otherExpectation(description) {
+        return { type: "other", description: description };
+    }
+    function peg$computePosDetails(pos) {
+        var details = peg$posDetailsCache[pos];
+        var p;
+        if (details) {
+            return details;
+        }
+        else {
+            p = pos - 1;
+            while (!peg$posDetailsCache[p]) {
+                p--;
+            }
+            details = peg$posDetailsCache[p];
+            details = {
+                line: details.line,
+                column: details.column
+            };
+            while (p < pos) {
+                if (input.charCodeAt(p) === 10) {
+                    details.line++;
+                    details.column = 1;
+                }
+                else {
+                    details.column++;
+                }
+                p++;
+            }
+            peg$posDetailsCache[pos] = details;
+            return details;
+        }
+    }
+    function peg$computeLocation(startPos, endPos) {
+        var startPosDetails = peg$computePosDetails(startPos);
+        var endPosDetails = peg$computePosDetails(endPos);
+        return {
+            start: {
+                offset: startPos,
+                line: startPosDetails.line,
+                column: startPosDetails.column
+            },
+            end: {
+                offset: endPos,
+                line: endPosDetails.line,
+                column: endPosDetails.column
+            }
+        };
+    }
+    function peg$fail(expected1) {
+        if (peg$currPos < peg$maxFailPos) {
+            return;
+        }
+        if (peg$currPos > peg$maxFailPos) {
+            peg$maxFailPos = peg$currPos;
+            peg$maxFailExpected = [];
+        }
+        peg$maxFailExpected.push(expected1);
+    }
+    function peg$buildSimpleError(message, location1) {
+        return new SyntaxError(message, [], "", location1);
+    }
+    function peg$buildStructuredError(expected1, found, location1) {
+        return new SyntaxError(SyntaxError.buildMessage(expected1, found), expected1, found, location1);
+    }
+    function peg$parseFormula() {
+        var s0, s1;
+        peg$silentFails++;
+        s0 = peg$parseAnd();
+        if (s0 === peg$FAILED) {
+            s0 = peg$parseOr();
+            if (s0 === peg$FAILED) {
+                s0 = peg$parseAtom();
+            }
+        }
+        peg$silentFails--;
+        if (s0 === peg$FAILED) {
+            s1 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c0);
+            }
+        }
+        return s0;
+    }
+    function peg$parse_() {
+        var s0, s1;
+        peg$silentFails++;
+        s0 = [];
+        if (peg$c2.test(input.charAt(peg$currPos))) {
+            s1 = input.charAt(peg$currPos);
+            peg$currPos++;
+        }
+        else {
+            s1 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c3);
+            }
+        }
+        while (s1 !== peg$FAILED) {
+            s0.push(s1);
+            if (peg$c2.test(input.charAt(peg$currPos))) {
+                s1 = input.charAt(peg$currPos);
+                peg$currPos++;
+            }
+            else {
+                s1 = peg$FAILED;
+                if (peg$silentFails === 0) {
+                    peg$fail(peg$c3);
+                }
+            }
+        }
+        peg$silentFails--;
+        if (s0 === peg$FAILED) {
+            s1 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c1);
+            }
+        }
+        return s0;
+    }
+    function peg$parseAnd() {
+        var s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10;
+        s0 = peg$currPos;
+        s1 = peg$parse_();
+        if (s1 !== peg$FAILED) {
+            if (input.charCodeAt(peg$currPos) === 40) {
+                s2 = peg$c4;
+                peg$currPos++;
+            }
+            else {
+                s2 = peg$FAILED;
+                if (peg$silentFails === 0) {
+                    peg$fail(peg$c5);
+                }
+            }
+            if (s2 !== peg$FAILED) {
+                s3 = peg$parse_();
+                if (s3 !== peg$FAILED) {
+                    s4 = peg$parseFormula();
+                    if (s4 !== peg$FAILED) {
+                        s5 = [];
+                        s6 = peg$currPos;
+                        s7 = peg$parse_();
+                        if (s7 !== peg$FAILED) {
+                            s8 = peg$parseConjunction();
+                            if (s8 !== peg$FAILED) {
+                                s9 = peg$parse_();
+                                if (s9 !== peg$FAILED) {
+                                    s10 = peg$parseFormula();
+                                    if (s10 !== peg$FAILED) {
+                                        s7 = [s7, s8, s9, s10];
+                                        s6 = s7;
+                                    }
+                                    else {
+                                        peg$currPos = s6;
+                                        s6 = peg$FAILED;
+                                    }
+                                }
+                                else {
+                                    peg$currPos = s6;
+                                    s6 = peg$FAILED;
+                                }
+                            }
+                            else {
+                                peg$currPos = s6;
+                                s6 = peg$FAILED;
+                            }
+                        }
+                        else {
+                            peg$currPos = s6;
+                            s6 = peg$FAILED;
+                        }
+                        if (s6 !== peg$FAILED) {
+                            while (s6 !== peg$FAILED) {
+                                s5.push(s6);
+                                s6 = peg$currPos;
+                                s7 = peg$parse_();
+                                if (s7 !== peg$FAILED) {
+                                    s8 = peg$parseConjunction();
+                                    if (s8 !== peg$FAILED) {
+                                        s9 = peg$parse_();
+                                        if (s9 !== peg$FAILED) {
+                                            s10 = peg$parseFormula();
+                                            if (s10 !== peg$FAILED) {
+                                                s7 = [s7, s8, s9, s10];
+                                                s6 = s7;
+                                            }
+                                            else {
+                                                peg$currPos = s6;
+                                                s6 = peg$FAILED;
+                                            }
+                                        }
+                                        else {
+                                            peg$currPos = s6;
+                                            s6 = peg$FAILED;
+                                        }
+                                    }
+                                    else {
+                                        peg$currPos = s6;
+                                        s6 = peg$FAILED;
+                                    }
+                                }
+                                else {
+                                    peg$currPos = s6;
+                                    s6 = peg$FAILED;
+                                }
+                            }
+                        }
+                        else {
+                            s5 = peg$FAILED;
+                        }
+                        if (s5 !== peg$FAILED) {
+                            s6 = peg$parse_();
+                            if (s6 !== peg$FAILED) {
+                                if (input.charCodeAt(peg$currPos) === 41) {
+                                    s7 = peg$c6;
+                                    peg$currPos++;
+                                }
+                                else {
+                                    s7 = peg$FAILED;
+                                    if (peg$silentFails === 0) {
+                                        peg$fail(peg$c7);
+                                    }
+                                }
+                                if (s7 !== peg$FAILED) {
+                                    s8 = peg$parse_();
+                                    if (s8 !== peg$FAILED) {
+                                        peg$savedPos = s0;
+                                        s1 = peg$c8(s4, s5);
+                                        s0 = s1;
+                                    }
+                                    else {
+                                        peg$currPos = s0;
+                                        s0 = peg$FAILED;
+                                    }
+                                }
+                                else {
+                                    peg$currPos = s0;
+                                    s0 = peg$FAILED;
+                                }
+                            }
+                            else {
+                                peg$currPos = s0;
+                                s0 = peg$FAILED;
+                            }
+                        }
+                        else {
+                            peg$currPos = s0;
+                            s0 = peg$FAILED;
+                        }
+                    }
+                    else {
+                        peg$currPos = s0;
+                        s0 = peg$FAILED;
+                    }
+                }
+                else {
+                    peg$currPos = s0;
+                    s0 = peg$FAILED;
+                }
+            }
+            else {
+                peg$currPos = s0;
+                s0 = peg$FAILED;
+            }
+        }
+        else {
+            peg$currPos = s0;
+            s0 = peg$FAILED;
+        }
+        return s0;
+    }
+    function peg$parseOr() {
+        var s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10;
+        s0 = peg$currPos;
+        s1 = peg$parse_();
+        if (s1 !== peg$FAILED) {
+            if (input.charCodeAt(peg$currPos) === 40) {
+                s2 = peg$c4;
+                peg$currPos++;
+            }
+            else {
+                s2 = peg$FAILED;
+                if (peg$silentFails === 0) {
+                    peg$fail(peg$c5);
+                }
+            }
+            if (s2 !== peg$FAILED) {
+                s3 = peg$parse_();
+                if (s3 !== peg$FAILED) {
+                    s4 = peg$parseFormula();
+                    if (s4 !== peg$FAILED) {
+                        s5 = [];
+                        s6 = peg$currPos;
+                        s7 = peg$parse_();
+                        if (s7 !== peg$FAILED) {
+                            s8 = peg$parseDisjunction();
+                            if (s8 !== peg$FAILED) {
+                                s9 = peg$parse_();
+                                if (s9 !== peg$FAILED) {
+                                    s10 = peg$parseFormula();
+                                    if (s10 !== peg$FAILED) {
+                                        s7 = [s7, s8, s9, s10];
+                                        s6 = s7;
+                                    }
+                                    else {
+                                        peg$currPos = s6;
+                                        s6 = peg$FAILED;
+                                    }
+                                }
+                                else {
+                                    peg$currPos = s6;
+                                    s6 = peg$FAILED;
+                                }
+                            }
+                            else {
+                                peg$currPos = s6;
+                                s6 = peg$FAILED;
+                            }
+                        }
+                        else {
+                            peg$currPos = s6;
+                            s6 = peg$FAILED;
+                        }
+                        if (s6 !== peg$FAILED) {
+                            while (s6 !== peg$FAILED) {
+                                s5.push(s6);
+                                s6 = peg$currPos;
+                                s7 = peg$parse_();
+                                if (s7 !== peg$FAILED) {
+                                    s8 = peg$parseDisjunction();
+                                    if (s8 !== peg$FAILED) {
+                                        s9 = peg$parse_();
+                                        if (s9 !== peg$FAILED) {
+                                            s10 = peg$parseFormula();
+                                            if (s10 !== peg$FAILED) {
+                                                s7 = [s7, s8, s9, s10];
+                                                s6 = s7;
+                                            }
+                                            else {
+                                                peg$currPos = s6;
+                                                s6 = peg$FAILED;
+                                            }
+                                        }
+                                        else {
+                                            peg$currPos = s6;
+                                            s6 = peg$FAILED;
+                                        }
+                                    }
+                                    else {
+                                        peg$currPos = s6;
+                                        s6 = peg$FAILED;
+                                    }
+                                }
+                                else {
+                                    peg$currPos = s6;
+                                    s6 = peg$FAILED;
+                                }
+                            }
+                        }
+                        else {
+                            s5 = peg$FAILED;
+                        }
+                        if (s5 !== peg$FAILED) {
+                            s6 = peg$parse_();
+                            if (s6 !== peg$FAILED) {
+                                if (input.charCodeAt(peg$currPos) === 41) {
+                                    s7 = peg$c6;
+                                    peg$currPos++;
+                                }
+                                else {
+                                    s7 = peg$FAILED;
+                                    if (peg$silentFails === 0) {
+                                        peg$fail(peg$c7);
+                                    }
+                                }
+                                if (s7 !== peg$FAILED) {
+                                    s8 = peg$parse_();
+                                    if (s8 !== peg$FAILED) {
+                                        peg$savedPos = s0;
+                                        s1 = peg$c9(s4, s5);
+                                        s0 = s1;
+                                    }
+                                    else {
+                                        peg$currPos = s0;
+                                        s0 = peg$FAILED;
+                                    }
+                                }
+                                else {
+                                    peg$currPos = s0;
+                                    s0 = peg$FAILED;
+                                }
+                            }
+                            else {
+                                peg$currPos = s0;
+                                s0 = peg$FAILED;
+                            }
+                        }
+                        else {
+                            peg$currPos = s0;
+                            s0 = peg$FAILED;
+                        }
+                    }
+                    else {
+                        peg$currPos = s0;
+                        s0 = peg$FAILED;
+                    }
+                }
+                else {
+                    peg$currPos = s0;
+                    s0 = peg$FAILED;
+                }
+            }
+            else {
+                peg$currPos = s0;
+                s0 = peg$FAILED;
+            }
+        }
+        else {
+            peg$currPos = s0;
+            s0 = peg$FAILED;
+        }
+        return s0;
+    }
+    function peg$parseAtom() {
+        var s0, s1, s2, s3;
+        s0 = peg$currPos;
+        s1 = peg$parseModifier();
+        if (s1 === peg$FAILED) {
+            s1 = null;
+        }
+        if (s1 !== peg$FAILED) {
+            s2 = peg$parse_();
+            if (s2 !== peg$FAILED) {
+                s3 = peg$parseProperty();
+                if (s3 !== peg$FAILED) {
+                    peg$savedPos = s0;
+                    s1 = peg$c10(s1, s3);
+                    s0 = s1;
+                }
+                else {
+                    peg$currPos = s0;
+                    s0 = peg$FAILED;
+                }
+            }
+            else {
+                peg$currPos = s0;
+                s0 = peg$FAILED;
+            }
+        }
+        else {
+            peg$currPos = s0;
+            s0 = peg$FAILED;
+        }
+        return s0;
+    }
+    function peg$parseModifier() {
+        var s0, s1;
+        peg$silentFails++;
+        if (input.charCodeAt(peg$currPos) === 126) {
+            s0 = peg$c12;
+            peg$currPos++;
+        }
+        else {
+            s0 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c13);
+            }
+        }
+        if (s0 === peg$FAILED) {
+            if (input.substr(peg$currPos, 4) === peg$c14) {
+                s0 = peg$c14;
+                peg$currPos += 4;
+            }
+            else {
+                s0 = peg$FAILED;
+                if (peg$silentFails === 0) {
+                    peg$fail(peg$c15);
+                }
+            }
+            if (s0 === peg$FAILED) {
+                if (input.charCodeAt(peg$currPos) === 63) {
+                    s0 = peg$c16;
+                    peg$currPos++;
+                }
+                else {
+                    s0 = peg$FAILED;
+                    if (peg$silentFails === 0) {
+                        peg$fail(peg$c17);
+                    }
+                }
+            }
+        }
+        peg$silentFails--;
+        if (s0 === peg$FAILED) {
+            s1 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c11);
+            }
+        }
+        return s0;
+    }
+    function peg$parseConjunction() {
+        var s0, s1;
+        peg$silentFails++;
+        if (input.substr(peg$currPos, 2) === peg$c19) {
+            s0 = peg$c19;
+            peg$currPos += 2;
+        }
+        else {
+            s0 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c20);
+            }
+        }
+        if (s0 === peg$FAILED) {
+            if (input.charCodeAt(peg$currPos) === 43) {
+                s0 = peg$c21;
+                peg$currPos++;
+            }
+            else {
+                s0 = peg$FAILED;
+                if (peg$silentFails === 0) {
+                    peg$fail(peg$c22);
+                }
+            }
+            if (s0 === peg$FAILED) {
+                if (input.substr(peg$currPos, 2) === peg$c23) {
+                    s0 = peg$c23;
+                    peg$currPos += 2;
+                }
+                else {
+                    s0 = peg$FAILED;
+                    if (peg$silentFails === 0) {
+                        peg$fail(peg$c24);
+                    }
+                }
+                if (s0 === peg$FAILED) {
+                    if (input.charCodeAt(peg$currPos) === 38) {
+                        s0 = peg$c25;
+                        peg$currPos++;
+                    }
+                    else {
+                        s0 = peg$FAILED;
+                        if (peg$silentFails === 0) {
+                            peg$fail(peg$c26);
+                        }
+                    }
+                }
+            }
+        }
+        peg$silentFails--;
+        if (s0 === peg$FAILED) {
+            s1 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c18);
+            }
+        }
+        return s0;
+    }
+    function peg$parseDisjunction() {
+        var s0, s1;
+        peg$silentFails++;
+        if (input.substr(peg$currPos, 2) === peg$c28) {
+            s0 = peg$c28;
+            peg$currPos += 2;
+        }
+        else {
+            s0 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c29);
+            }
+        }
+        if (s0 === peg$FAILED) {
+            if (input.charCodeAt(peg$currPos) === 124) {
+                s0 = peg$c30;
+                peg$currPos++;
+            }
+            else {
+                s0 = peg$FAILED;
+                if (peg$silentFails === 0) {
+                    peg$fail(peg$c31);
+                }
+            }
+        }
+        peg$silentFails--;
+        if (s0 === peg$FAILED) {
+            s1 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c27);
+            }
+        }
+        return s0;
+    }
+    function peg$parseProperty() {
+        var s0, s1, s2;
+        peg$silentFails++;
+        s0 = peg$currPos;
+        s1 = [];
+        if (peg$c33.test(input.charAt(peg$currPos))) {
+            s2 = input.charAt(peg$currPos);
+            peg$currPos++;
+        }
+        else {
+            s2 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c34);
+            }
+        }
+        if (s2 !== peg$FAILED) {
+            while (s2 !== peg$FAILED) {
+                s1.push(s2);
+                if (peg$c33.test(input.charAt(peg$currPos))) {
+                    s2 = input.charAt(peg$currPos);
+                    peg$currPos++;
+                }
+                else {
+                    s2 = peg$FAILED;
+                    if (peg$silentFails === 0) {
+                        peg$fail(peg$c34);
+                    }
+                }
+            }
+        }
+        else {
+            s1 = peg$FAILED;
+        }
+        if (s1 !== peg$FAILED) {
+            peg$savedPos = s0;
+            s1 = peg$c35(s1);
+        }
+        s0 = s1;
+        peg$silentFails--;
+        if (s0 === peg$FAILED) {
+            s1 = peg$FAILED;
+            if (peg$silentFails === 0) {
+                peg$fail(peg$c32);
+            }
+        }
+        return s0;
+    }
+    peg$result = peg$startRuleFunction();
+    if (peg$result !== peg$FAILED && peg$currPos === input.length) {
+        return peg$result;
+    }
+    else {
+        if (peg$result !== peg$FAILED && peg$currPos < input.length) {
+            peg$fail(peg$endExpectation());
+        }
+        throw peg$buildStructuredError(peg$maxFailExpected, peg$maxFailPos < input.length ? input.charAt(peg$maxFailPos) : null, peg$maxFailPos < input.length
+            ? peg$computeLocation(peg$maxFailPos, peg$maxFailPos + 1)
+            : peg$computeLocation(peg$maxFailPos, peg$maxFailPos));
+    }
+}
+exports.parse = peg$parse;
+
+
+/***/ }),
+
+/***/ 809:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+var __generator = (this && this.__generator) || function (thisArg, body) {
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g;
+    return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    function verb(n) { return function (v) { return step([n, v]); }; }
+    function step(op) {
+        if (f) throw new TypeError("Generator is already executing.");
+        while (_) try {
+            if (f = 1, y && (t = op[0] & 2 ? y["return"] : op[0] ? y["throw"] || ((t = y["return"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;
+            if (y = 0, t) op = [op[0] & 2, t.value];
+            switch (op[0]) {
+                case 0: case 1: t = op; break;
+                case 4: _.label++; return { value: op[1], done: false };
+                case 5: _.label++; y = op[1]; op = [0]; continue;
+                case 7: op = _.ops.pop(); _.trys.pop(); continue;
+                default:
+                    if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
+                    if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
+                    if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
+                    if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
+                    if (t[2]) _.ops.pop();
+                    _.trys.pop(); continue;
+            }
+            op = body.call(thisArg, _);
+        } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
+        if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
+    }
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+var Id_1 = __webpack_require__(730);
+var defaultHost = 'https://pi-base-bundles.s3.us-east-2.amazonaws.com';
+function serialize(bundle) {
+    return {
+        properties: Array.from(bundle.properties.values()),
+        spaces: Array.from(bundle.spaces.values()),
+        theorems: Array.from(bundle.theorems.values()),
+        traits: Array.from(bundle.traits.values()),
+        version: bundle.version
+    };
+}
+exports.serialize = serialize;
+function deserialize(serialized) {
+    return {
+        properties: indexBy(serialized.properties, function (p) { return p.uid; }),
+        spaces: indexBy(serialized.spaces, function (s) { return s.uid; }),
+        theorems: indexBy(serialized.theorems, function (t) { return t.uid; }),
+        traits: indexBy(serialized.traits, Id_1.traitId),
+        version: serialized.version
+    };
+}
+exports.deserialize = deserialize;
+function bundleUrl(_a) {
+    var branch = _a.branch, _b = _a.host, host = _b === void 0 ? defaultHost : _b;
+    return host + "/refs/heads/" + branch + ".json";
+}
+exports.bundleUrl = bundleUrl;
+function fetch(opts) {
+    return __awaiter(this, void 0, void 0, function () {
+        var response, json;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, window.fetch(bundleUrl(opts))];
+                case 1:
+                    response = _a.sent();
+                    return [4 /*yield*/, response.json()
+                        // TODO: validate returned data
+                    ];
+                case 2:
+                    json = _a.sent();
+                    // TODO: validate returned data
+                    return [2 /*return*/, deserialize(json)];
+            }
+        });
+    });
+}
+exports.fetch = fetch;
+function indexBy(collection, key) {
+    return new Map(collection.map(function (value) { return [key(value), value]; }));
+}
+
+
+/***/ }),
+
+/***/ 820:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const fs_1 = __importDefault(__webpack_require__(747));
+const util_1 = __importDefault(__webpack_require__(669));
+const glob_1 = __importDefault(__webpack_require__(402));
+const glob = util_1.default.promisify(glob_1.default);
+async function readFile(path) {
+    const buffer = await util_1.default.promisify(fs_1.default.readFile)(path);
+    return buffer.toString();
+}
+exports.readFile = readFile;
+async function readFiles(pattern) {
+    const items = await glob(pattern);
+    return Promise.all(items.map(async function read(path) {
+        const contents = await readFile(path);
+        return { path, contents: contents.toString() };
+    }));
+}
+exports.readFiles = readFiles;
 
 
 /***/ }),
