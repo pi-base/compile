@@ -3557,6 +3557,9 @@ const fs = __importStar(__webpack_require__(747));
 const process = __importStar(__webpack_require__(765));
 const B = __importStar(__webpack_require__(809));
 const load_1 = __importDefault(__webpack_require__(661));
+function error(file, message) {
+    console.log(`::error file=${file}::${message}`);
+}
 async function run() {
     const repo = process.env['GITHUB_WORKSPACE'] || '.';
     const outpath = core.getInput('out');
@@ -3565,7 +3568,7 @@ async function run() {
     if (errors) {
         errors.forEach((messages, path) => {
             messages.forEach(message => {
-                core.error(`file=${path}::${message}`);
+                error(path, message);
             });
         });
     }
