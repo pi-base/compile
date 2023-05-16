@@ -1,3 +1,9 @@
+# 🛑 DEPRECATED 🛑
+
+➡️ This package is now managed in the [`pi-base/web` monorepo](https://github.com/pi-base/web/tree/main/packages/compile)
+
+---
+
 [![build-test](https://github.com/pi-base/compile/workflows/build-test/badge.svg)](https://github.com/pi-base/compile/actions?query=branch%3Amaster)
 [![Coverage Status](https://coveralls.io/repos/github/pi-base/compile/badge.svg?branch=master)](https://coveralls.io/github/pi-base/compile?branch=master)
 
