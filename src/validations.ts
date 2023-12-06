@@ -1,9 +1,9 @@
 import * as yaml from 'yaml-front-matter'
 
-import { Bundle, Property, check } from '@pi-base/core'
+import {Bundle, Property, check} from '@pi-base/core'
 import * as Formula from '@pi-base/core/lib/Formula'
 
-import { File } from './fs'
+import {File} from './fs'
 
 export type Message = {
   path: string
@@ -25,11 +25,14 @@ function loadFront(raw: string): any {
   return yaml.safeLoadFront(raw)
 }
 
-export function all<I, O>(validator: Validator<I, O>, inputs: I[]): Result<O[]> {
-  const out: Result<O[]> = { value: [], errors: [] }
+export function all<I, O>(
+  validator: Validator<I, O>,
+  inputs: I[]
+): Result<O[]> {
+  const out: Result<O[]> = {value: [], errors: []}
 
   inputs.forEach(input => {
-    const { value, errors } = validator(input)
+    const {value, errors} = validator(input)
     if (value && out.value) {
       out.value.push(value)
     } else {
@@ -45,10 +48,10 @@ function validate<T>(
   path: string,
   handler: (error: Handler) => T | undefined
 ): Result<T> {
-  const result: Result<T> = { errors: [] }
+  const result: Result<T> = {errors: []}
 
   const error = (message: string, key: string = path) => {
-    result.errors.push({ path: key, message })
+    result.errors.push({path: key, message})
   }
 
   result.value = handler(error)
@@ -61,7 +64,9 @@ function duplicated<T>(values: T[]) {
   const dupes = new Set<T>()
 
   values.forEach(value => {
-    if (seen.has(value)) { dupes.add(value) }
+    if (seen.has(value)) {
+      dupes.add(value)
+    }
     seen.add(value)
   })
 
@@ -76,15 +81,23 @@ function noExtras(rest: object, error: Handler) {
 
 function required<T>(value: T, key: keyof T, error: Handler) {
   if (!value[key] && (value[key] as any) !== false) {
-    error(`${key} is required`)
+    error(`${String(key)} is required`)
   }
 }
 
 const paths = {
-  property(p: string) { return `properties/${p}.md` },
-  space(s: string) { return `spaces/${s}/README.md` },
-  theorem(t: string) { return `theorems/${t}.md` },
-  trait({ space, property }: { space: string, property: string }) { return `spaces/${space}/properties/${property}.md` }
+  property(p: string) {
+    return `properties/${p}.md`
+  },
+  space(s: string) {
+    return `spaces/${s}/README.md`
+  },
+  theorem(t: string) {
+    return `theorems/${t}.md`
+  },
+  trait({space, property}: {space: string; property: string}) {
+    return `spaces/${space}/properties/${property}.md`
+  }
 }
 
 export function property(input: File): Result<Property> {
@@ -96,6 +109,7 @@ export function property(input: File): Result<Property> {
       aliases = [],
       refs = [],
       slug,
+      mathlib,
       __content: description = '',
       ...rest
     } = loadFront(input.contents)
@@ -106,6 +120,7 @@ export function property(input: File): Result<Property> {
       name: String(name).trim(),
       aliases,
       refs,
+      mathlib,
       description: String(description).trim()
     }
 
@@ -132,6 +147,7 @@ export function space(input: File) {
       refs = [],
       ambiguous_construction,
       slug,
+      mathlib,
       __content: description = '',
       ...rest
     } = loadFront(input.contents)
@@ -143,7 +159,8 @@ export function space(input: File) {
       description: String(description).trim(),
       aliases,
       refs,
-      ambiguous_construction
+      ambiguous_construction,
+      mathlib
     }
 
     if (!input.path.endsWith(paths.space(uid))) {
@@ -219,7 +236,7 @@ export function trait(input: File) {
       description
     }
 
-    if (!input.path.endsWith(paths.trait({ space, property }))) {
+    if (!input.path.endsWith(paths.trait({space, property}))) {
       error(`path does not match space=${space} and property=${property}`)
     }
 
@@ -235,12 +252,16 @@ export function trait(input: File) {
 
 export function bundle(bundle: Bundle): Result<Bundle> {
   return validate('', error => {
-    const duplicatePropertyNames = duplicated(Array.from(bundle.properties.values()).map(s => s.name))
+    const duplicatePropertyNames = duplicated(
+      Array.from(bundle.properties.values()).map(s => s.name)
+    )
     if (duplicatePropertyNames.length > 0) {
       error(`Duplicate property names: ${duplicatePropertyNames}`)
     }
 
-    const duplicateSpaceNames = duplicated(Array.from(bundle.spaces.values()).map(s => s.name))
+    const duplicateSpaceNames = duplicated(
+      Array.from(bundle.spaces.values()).map(s => s.name)
+    )
     if (duplicateSpaceNames.length > 0) {
       error(`Duplicate space names: ${duplicateSpaceNames}`)
     }
@@ -290,7 +311,10 @@ export function bundle(bundle: Bundle): Result<Bundle> {
           result = checked.bundle
           break
         case 'contradiction':
-          error(`properties=${checked.contradiction.properties} contradict theorems=${checked.contradiction.theorems}`, key)
+          error(
+            `properties=${checked.contradiction.properties} contradict theorems=${checked.contradiction.theorems}`,
+            key
+          )
           break
       }
     }
