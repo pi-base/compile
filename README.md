@@ -26,8 +26,9 @@ Actions can be published on a releases branch using `ncc`
 
     git checkout releases/v1
     git merge master
-    yarn release
-    git add -f dist/index.js
+    # ... something about esbuild ...
+    # yarn release
+    # git add -f dist/index.js
     git commit
     git push
 
